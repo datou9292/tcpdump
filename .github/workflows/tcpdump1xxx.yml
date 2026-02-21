@@ -1,0 +1,91 @@
+name: Build tcpdump (ARM softfloat musl static)
+
+# 触发条件：提交/PR/手动触发（和rtp2httpd一致）
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-arm-musl:
+    runs-on: ubuntu-latest
+    steps:
+      # 步骤1：拉取你仓库的tcpdump源码
+      - name: Checkout tcpdump source
+        uses: actions/checkout@v4
+
+      # 步骤2：安装工具链依赖（构建musl交叉编译工具链必需）
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y \
+            git make gcc g++ patch bison flex gettext wget curl \
+            libtool autoconf automake pkg-config
+
+      # 步骤3：构建ARM软浮点（armel）musl交叉编译工具链
+      - name: Build armel-musl cross toolchain
+        run: |
+          # 克隆musl-cross-make（生成musl交叉工具链的核心仓库）
+          git clone https://github.com/richfelker/musl-cross-make.git
+          cd musl-cross-make
+          # 配置：指定目标架构为armel（软浮点）、musl版本
+          echo "TARGET = arm-linux-musleabi" > config.mak  # armel=musleabi，硬浮点=musleabihf
+          echo "COMMON_CONFIG += --disable-multilib" >> config.mak
+          echo "COMMON_CONFIG += --disable-libsanitizer" >> config.mak
+          # 编译工具链（约5分钟，GitHub Actions资源足够）
+          make -j$(nproc)
+          # 安装工具链到/usr/local
+          sudo make install
+          # 验证工具链是否生效
+          arm-linux-musleabi-gcc --version
+
+      # 步骤4：编译libpcap（tcpdump依赖，需同步静态编译为armel-musl）
+      - name: Build libpcap (armel-musl static)
+        run: |
+          # 克隆libpcap源码（和tcpdump匹配的版本，避免兼容性问题）
+          git clone https://github.com/the-tcpdump-group/libpcap.git
+          cd libpcap
+          # 生成configure文件
+          ./autogen.sh
+          # 配置：指定armel-musl交叉编译、静态链接
+          ./configure \
+            --host=arm-linux-musleabi \
+            CC=arm-linux-musleabi-gcc \
+            CFLAGS="-static -Os" \
+            LDFLAGS="-static" \
+            --disable-shared --enable-static \
+            --without-libnl --without-pcap-ng
+          # 编译并安装
+          make -j$(nproc)
+          sudo make install
+
+      # 步骤5：编译tcpdump（你的仓库源码，armel-musl静态）
+      - name: Build tcpdump (armel-musl static)
+        run: |
+          cd $GITHUB_WORKSPACE  # 回到tcpdump源码根目录
+          # 生成configure文件（你的仓库若已有可跳过，保险起见保留）
+          ./autogen.sh
+          # 核心配置：ARM软浮点+musl+全静态链接
+          ./configure \
+            --host=arm-linux-musleabi \
+            CC=arm-linux-musleabi-gcc \
+            CFLAGS="-static -Os -mfloat-abi=soft"  # 强制软浮点
+            LDFLAGS="-static -L/usr/local/lib" \
+            --disable-shared --enable-static \
+            --with-libpcap=/usr/local
+          # 编译（-j加速）
+          make -j$(nproc)
+          # 验证产物：确认是ARM软浮点、静态链接
+          arm-linux-musleabi-readelf -h ./tcpdump  # 查看架构
+          arm-linux-musleabi-readelf -d ./tcpdump  # 确认无动态依赖
+
+      # 步骤6：上传编译产物（和rtp2httpd一致，方便下载）
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcpdump-armel-musl-static
+          path: |
+            ./tcpdump
+            # 附带验证信息，方便你核对
+            ${{ github.workspace }}/tcpdump --version > tcpdump-version.txt
