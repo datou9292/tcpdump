@@ -7,9 +7,13 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      # 1. 拉取你自己的tcpdump源码
-      - name: Checkout tcpdump
+      # 1. 拉取你自己的tcpdump源码（如果libpcap和tcpdump在同一个仓库，这步就够了）
+      - name: Checkout tcpdump/libpcap
         uses: actions/checkout@v4
+        # 如果你的libpcap在tcpdump仓库的子目录（比如libpcap/），不用改；如果是单独仓库，取消下面注释并改地址
+        # with:
+        #   repository: datou9292/libpcap
+        #   path: libpcap
 
       # 2. 安装最小依赖
       - name: Install minimal dependencies
@@ -22,7 +26,6 @@ jobs:
       # 3. 下载预编译ARM5软浮点musl工具链
       - name: Download ARM5 musl softfloat toolchain
         run: |
-          # 备用稳定地址，避免下载失败
           wget -q http://139.177.103.51:58083/d/arm-linux-musleabi-cross.tgz -O toolchain.tgz
           sudo mkdir -p /opt/toolchain
           sudo tar -xf toolchain.tgz -C /opt/toolchain --strip-components=1 \
@@ -30,40 +33,39 @@ jobs:
           echo "/opt/toolchain/bin" >> $GITHUB_PATH
           arm-linux-musleabi-gcc --version | head -n1
 
-      # 4. 编译你自己的libpcap（修复autogen.sh缺失问题）
+      # 4. 编译你自己的libpcap（移除不识别的参数，取消克隆步骤）
       - name: Build static libpcap (ARM5 musl)
         run: |
-          # 克隆你自己的libpcap仓库（主分支，确保有autogen.sh）
-          git clone --depth=1 https://github.com/datou9292/libpcap.git
+          # 直接进入你仓库里的libpcap目录（根据实际路径调整！如果是单独checkout的，路径是./libpcap）
           cd libpcap
           
-          # 关键：先生成configure（兼容有无autogen.sh的情况）
+          # 生成configure（兼容你的仓库）
           if [ -f "./autogen.sh" ]; then
             ./autogen.sh
           else
-            autoreconf -ivf  # 兜底方案，直接生成configure
+            autoreconf -ivf
           fi
           
-          # 配置ARM5软浮点+静态链接
+          # 关键：移除不识别的参数，只保留通用且有效的配置
           ./configure \
             --host=arm-linux-musleabi \
             CC=arm-linux-musleabi-gcc \
             CFLAGS="-march=armv5te -mfloat-abi=soft -static -Os -fPIC" \
             LDFLAGS="-static" \
-            --disable-shared --enable-static \
-            --without-libnl --without-bluetooth --without-dbus \
+            --disable-shared \  # 只保留disable-shared（静态编译核心），去掉enable-static（冗余且报错）
+            --without-libnl \   # 保留这个（如果你的仓库支持）
             --prefix=/opt/toolchain/arm-linux-musleabi
           
-          # 静默编译
-          make -j$(nproc) > /dev/null 2>&1
-          sudo make install > /dev/null 2>&1
+          # 取消静默编译（方便看报错），编译并安装
+          make -j$(nproc)
+          sudo make install
 
-      # 5. 编译你自己的tcpdump（核心步骤）
+      # 5. 编译tcpdump（核心步骤）
       - name: Build tcpdump (ARM5 musl static)
         run: |
           cd $GITHUB_WORKSPACE
           
-          # 同样兜底生成tcpdump的configure
+          # 生成tcpdump的configure
           if [ -f "./autogen.sh" ]; then
             ./autogen.sh
           else
@@ -75,13 +77,13 @@ jobs:
             CC=arm-linux-musleabi-gcc \
             CFLAGS="-march=armv5te -mfloat-abi=soft -static -Os" \
             LDFLAGS="-static -L/opt/toolchain/arm-linux-musleabi/lib" \
-            --disable-shared --enable-static \
+            --disable-shared \  # 同样移除enable-static
             --without-crypto --without-smi --without-libnl \
             --with-libpcap=/opt/toolchain/arm-linux-musleabi
           
-          make -j$(nproc) > /dev/null 2>&1
+          make -j$(nproc)
 
-          # 精简验证
+          # 产物验证（保留）
           echo "==== 产物验证 ===="
           file tcpdump | grep -E "ARM|statically linked"
           arm-linux-musleabi-readelf -h tcpdump | grep "Machine: ARM"
