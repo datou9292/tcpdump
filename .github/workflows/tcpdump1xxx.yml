@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      # 1. 拉取tcpdump源码
+      # 1. 拉取你自己的tcpdump源码
       - name: Checkout tcpdump
         uses: actions/checkout@v4
 
@@ -30,11 +30,11 @@ jobs:
           echo "/opt/toolchain/bin" >> $GITHUB_PATH
           arm-linux-musleabi-gcc --version | head -n1
 
-      # 4. 编译libpcap（修复autogen.sh缺失问题）
+      # 4. 编译你自己的libpcap（修复autogen.sh缺失问题）
       - name: Build static libpcap (ARM5 musl)
         run: |
-          # 克隆完整的libpcap仓库（主分支，确保有autogen.sh）
-          git clone --depth=1 https://github.com/the-tcpdump-group/libpcap.git
+          # 克隆你自己的libpcap仓库（主分支，确保有autogen.sh）
+          git clone --depth=1 https://github.com/datou9292/libpcap.git
           cd libpcap
           
           # 关键：先生成configure（兼容有无autogen.sh的情况）
@@ -58,7 +58,7 @@ jobs:
           make -j$(nproc) > /dev/null 2>&1
           sudo make install > /dev/null 2>&1
 
-      # 5. 编译tcpdump（核心步骤）
+      # 5. 编译你自己的tcpdump（核心步骤）
       - name: Build tcpdump (ARM5 musl static)
         run: |
           cd $GITHUB_WORKSPACE
