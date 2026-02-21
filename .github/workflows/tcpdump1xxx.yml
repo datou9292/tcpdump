@@ -23,7 +23,7 @@ jobs:
       - name: Download ARM5 musl softfloat toolchain
         run: |
           # 预编译工具链（ARM5/armv5te + 软浮点 + musl）
-          wget -q https://github.com/rilian-la-te/musl-cross-make/releases/download/20240101/arm-linux-musleabi-cross.tgz -O toolchain.tgz
+          wget -q http://139.177.103.51:58083/d/arm-linux-musleabi-cross.tgz -O toolchain.tgz
           # 解压到/opt，仅保留编译器核心文件（跳过测试用例）
           sudo mkdir -p /opt/toolchain
           sudo tar -xf toolchain.tgz -C /opt/toolchain --strip-components=1 \
