@@ -1,7 +1,7 @@
 name: Build tcpdump (ARM5 musl softfloat static)
 
 on:
-  workflow_dispatch:  # 仅手动触发，避免自动编译浪费资源
+  workflow_dispatch:  # 仅手动触发
 
 jobs:
   build:
@@ -11,39 +11,40 @@ jobs:
       - name: Checkout tcpdump
         uses: actions/checkout@v4
 
-      # 2. 安装基础依赖（仅保留必需项）
+      # 2. 安装最小依赖
       - name: Install minimal dependencies
         run: |
           sudo apt update && sudo apt install -y \
             wget tar make autoconf automake libtool pkg-config \
-            bison flex  # tcpdump编译必需
-          sudo apt clean  # 清理缓存，减少磁盘占用
+            bison flex
+          sudo apt clean
 
-      # 3. 下载预编译的ARM5软浮点musl工具链（跳过手动编译GCC）
+      # 3. 下载预编译ARM5软浮点musl工具链
       - name: Download ARM5 musl softfloat toolchain
         run: |
-          # 预编译工具链（ARM5/armv5te + 软浮点 + musl）
+          # 备用稳定地址，避免下载失败
           wget -q http://139.177.103.51:58083/d/arm-linux-musleabi-cross.tgz -O toolchain.tgz
-          # 解压到/opt，仅保留编译器核心文件（跳过测试用例）
           sudo mkdir -p /opt/toolchain
           sudo tar -xf toolchain.tgz -C /opt/toolchain --strip-components=1 \
-            --exclude="*/testsuite" \
-            --exclude="*/share" \
-            --exclude="*/man"
-          # 添加工具链到PATH
+            --exclude="*/testsuite" --exclude="*/share" --exclude="*/man"
           echo "/opt/toolchain/bin" >> $GITHUB_PATH
-          # 验证编译器（仅检查版本，不跑测试）
           arm-linux-musleabi-gcc --version | head -n1
 
-      # 4. 编译静态版libpcap（tcpdump依赖，纯C + 静态）
+      # 4. 编译libpcap（修复autogen.sh缺失问题）
       - name: Build static libpcap (ARM5 musl)
         run: |
-          # 克隆libpcap源码（和tcpdump匹配版本）
-          git clone --depth=1 --branch=libpcap-1.10.4 https://github.com/the-tcpdump-group/libpcap.git
+          # 克隆完整的libpcap仓库（主分支，确保有autogen.sh）
+          git clone --depth=1 https://github.com/the-tcpdump-group/libpcap.git
           cd libpcap
-          # 生成配置文件
-          ./autogen.sh
-          # 配置：ARM5 + 软浮点 + 纯静态
+          
+          # 关键：先生成configure（兼容有无autogen.sh的情况）
+          if [ -f "./autogen.sh" ]; then
+            ./autogen.sh
+          else
+            autoreconf -ivf  # 兜底方案，直接生成configure
+          fi
+          
+          # 配置ARM5软浮点+静态链接
           ./configure \
             --host=arm-linux-musleabi \
             CC=arm-linux-musleabi-gcc \
@@ -52,17 +53,23 @@ jobs:
             --disable-shared --enable-static \
             --without-libnl --without-bluetooth --without-dbus \
             --prefix=/opt/toolchain/arm-linux-musleabi
-          # 编译并安装（跳过测试）
-          make -j$(nproc) > /dev/null 2>&1  # 静默编译，减少日志
+          
+          # 静默编译
+          make -j$(nproc) > /dev/null 2>&1
           sudo make install > /dev/null 2>&1
 
-      # 5. 编译tcpdump（核心步骤，纯静态 + ARM5软浮点）
+      # 5. 编译tcpdump（核心步骤）
       - name: Build tcpdump (ARM5 musl static)
         run: |
           cd $GITHUB_WORKSPACE
-          # 生成tcpdump配置文件
-          ./autogen.sh
-          # 关键配置：禁用所有非必需功能，纯静态
+          
+          # 同样兜底生成tcpdump的configure
+          if [ -f "./autogen.sh" ]; then
+            ./autogen.sh
+          else
+            autoreconf -ivf
+          fi
+          
           ./configure \
             --host=arm-linux-musleabi \
             CC=arm-linux-musleabi-gcc \
@@ -71,18 +78,16 @@ jobs:
             --disable-shared --enable-static \
             --without-crypto --without-smi --without-libnl \
             --with-libpcap=/opt/toolchain/arm-linux-musleabi
-          # 静默编译，避免日志溢出
+          
           make -j$(nproc) > /dev/null 2>&1
 
-          # 验证产物（精简输出）
+          # 精简验证
           echo "==== 产物验证 ===="
           file tcpdump | grep -E "ARM|statically linked"
-          # 检查是否为ARM5架构
           arm-linux-musleabi-readelf -h tcpdump | grep "Machine: ARM"
-          # 检查无动态依赖
           arm-linux-musleabi-readelf -d tcpdump | grep -q NEEDED && echo "❌ 动态链接" || echo "✅ 纯静态"
 
-      # 6. 上传产物（仅保留tcpdump二进制）
+      # 6. 上传产物
       - name: Upload tcpdump artifact
         uses: actions/upload-artifact@v4
         with:
