@@ -10,11 +10,11 @@ jobs:
       # 1. 拉取你自己的libpcap仓库（根目录就是libpcap源码）
       - name: Checkout libpcap
         uses: actions/checkout@v4
-        # 如需指定分支，取消下面注释并修改分支名（比如main/master）
+        # 如需指定分支，取消下面注释并修改分支名
         # with:
         #   ref: main
 
-      # 2. 调试：打印目录结构（可选，方便排查路径问题）
+      # 2. 调试：打印目录结构（可选，方便排查）
       - name: Debug - Print directory structure
         run: |
           echo "当前工作目录：$(pwd)"
@@ -37,20 +37,20 @@ jobs:
           sudo tar -xf toolchain.tgz -C /opt/toolchain --strip-components=1 \
             --exclude="*/testsuite" --exclude="*/share" --exclude="*/man"
           echo "/opt/toolchain/bin" >> $GITHUB_PATH
-          # 验证工具链是否可用
+          # 验证工具链
           arm-linux-musleabi-gcc --version | head -n1
 
-      # 5. 编译libpcap（核心：直接在仓库根目录操作，无需cd libpcap）
+      # 5. 编译&安装libpcap（核心：强制指定路径，确保库文件可被找到）
       - name: Build static libpcap (ARM5 musl)
         run: |
-          # 生成configure脚本（兼容不同libpcap仓库的初始化方式）
+          # 生成configure脚本
           if [ -f "./autogen.sh" ]; then
             ./autogen.sh
           else
             autoreconf -ivf
           fi
           
-          # 配置编译参数（移除所有不识别的参数，仅保留有效项）
+          # 配置libpcap编译参数（新增--libdir确保库安装到工具链lib目录）
           ./configure \
             --host=arm-linux-musleabi \
             CC=arm-linux-musleabi-gcc \
@@ -58,24 +58,30 @@ jobs:
             LDFLAGS="-static" \
             --disable-shared \
             --without-libnl \
-            --prefix=/opt/toolchain/arm-linux-musleabi
+            --prefix=/opt/toolchain/arm-linux-musleabi \
+            --libdir=/opt/toolchain/arm-linux-musleabi/lib  # 显式指定库安装路径
           
-          # 编译并安装（-j$(nproc) 利用多核加速）
+          # 编译+安装
           make -j$(nproc)
           sudo make install
+          
+          # 验证libpcap是否安装成功（关键：检查库文件是否存在）
+          echo "==== 验证libpcap安装 ===="
+          ls -la /opt/toolchain/arm-linux-musleabi/lib/libpcap*
+          ls -la /opt/toolchain/arm-linux-musleabi/include/pcap*.h
 
-      # 6. 拉取tcpdump源码（单独拉取，因为libpcap仓库不含tcpdump）
+      # 6. 拉取tcpdump源码
       - name: Checkout tcpdump
         uses: actions/checkout@v4
         with:
-          repository: the-tcpdump-group/tcpdump  # 官方tcpdump，也可替换为你的tcpdump仓库
-          path: tcpdump  # 拉取到tcpdump子目录
-          depth: 1  # 浅克隆加速
+          repository: the-tcpdump-group/tcpdump
+          path: tcpdump
+          depth: 1
 
-      # 7. 编译tcpdump（ARM5 musl静态编译）
+      # 7. 编译tcpdump（核心修复：显式指定库路径+强制静态链接）
       - name: Build tcpdump (ARM5 musl static)
         run: |
-          cd tcpdump  # 进入tcpdump源码目录
+          cd tcpdump
           
           # 生成tcpdump的configure脚本
           if [ -f "./autogen.sh" ]; then
@@ -84,29 +90,35 @@ jobs:
             autoreconf -ivf
           fi
           
-          # 配置tcpdump编译参数
+          # 关键：设置环境变量，让configure找到libpcap的头文件和库
+          export PKG_CONFIG_PATH=/opt/toolchain/arm-linux-musleabi/lib/pkgconfig:$PKG_CONFIG_PATH
+          export CFLAGS="-I/opt/toolchain/arm-linux-musleabi/include $CFLAGS"
+          export LDFLAGS="-L/opt/toolchain/arm-linux-musleabi/lib -static $LDFLAGS"
+          
+          # 配置tcpdump编译参数（修复--with-libpcap，新增LIBS强制链接libpcap）
           ./configure \
             --host=arm-linux-musleabi \
             CC=arm-linux-musleabi-gcc \
-            CFLAGS="-march=armv5te -mfloat-abi=soft -static -Os" \
+            CFLAGS="-march=armv5te -mfloat-abi=soft -static -Os -I/opt/toolchain/arm-linux-musleabi/include" \
             LDFLAGS="-static -L/opt/toolchain/arm-linux-musleabi/lib" \
+            LIBS="-lpcap -lpthread -lm"  # 强制指定链接libpcap
             --disable-shared \
             --without-crypto --without-smi --without-libnl \
-            --with-libpcap=/opt/toolchain/arm-linux-musleabi
+            --with-libpcap=/opt/toolchain/arm-linux-musleabi  # 指向libpcap安装根目录
           
           # 编译tcpdump
           make -j$(nproc)
-
-          # 验证产物（关键：确认是ARM静态链接）
+          
+          # 验证产物
           echo "==== 产物验证 ===="
           file tcpdump | grep -E "ARM|statically linked"
           arm-linux-musleabi-readelf -h tcpdump | grep "Machine: ARM"
           arm-linux-musleabi-readelf -d tcpdump | grep -q NEEDED && echo "❌ 动态链接" || echo "✅ 纯静态"
 
-      # 8. 上传编译产物（可下载使用）
+      # 8. 上传产物
       - name: Upload tcpdump artifact
         uses: actions/upload-artifact@v4
         with:
           name: tcpdump-arm5-musl-softfloat-static
-          path: ./tcpdump/tcpdump  # 产物路径
-          retention-days: 90  # 产物保留90天
+          path: ./tcpdump/tcpdump
+          retention-days: 90
